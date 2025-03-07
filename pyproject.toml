@@ -1,0 +1,18 @@
+[project]
+name = "perspicio"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "flask>=3.1.0",
+    "flask-peewee>=3.0.6",
+    "lxml>=5.3.1",
+    "orjson>=3.10.15",
+    "peewee>=3.17.9",
+    "python-dateutil>=2.9.0.post0",
+    "ratelimit>=2.2.1",
+    "requests>=2.32.3",
+    "tenacity>=9.0.0",
+]
