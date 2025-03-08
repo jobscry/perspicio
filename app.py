@@ -1,12 +1,16 @@
+import csv
 import logging
 import os
 from datetime import datetime, timezone
+from io import StringIO
+from typing import Generator, List
 
 import orjson
 import peewee
 import requests
 from dotenv import load_dotenv
-from flask import Database, Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request
+from flask_peewee.db import Database
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from werkzeug.utils import secure_filename
 
@@ -370,6 +374,27 @@ def paginated_query(
     }
 
 
+def stream_csv(
+    objs: peewee.Select, fieldnames: List[str]
+) -> Generator[str, None, None]:
+    output = StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=fieldnames,
+    )
+
+    writer.writeheader()
+    yield output.getvalue()
+    output.seek(0)
+    output.truncate(0)
+
+    for obj in objs:
+        writer.writerow(obj.__data__)
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+
+
 @app.get("/sbom")
 def list_sboms():
     return paginated_query(
@@ -419,9 +444,14 @@ def list_sbom_cpes(sbom_id: int):
 
 @app.route("/sbom/<int:sbom_id>/cve", methods=["GET"])
 def list_sbom_cves(sbom_id: int):
+    output_format = request.args.get("format", "json")
+
+    if output_format not in ["json", "csv"]:
+        raise APIError("Invalid output format", 400)
+
     sbom = SBOM.get_or_none(SBOM.id == sbom_id)
     if sbom is None:
-        return jsonify({"error": "SBOM not found"}), 404
+        raise APIError("SBOM not found", 404)
 
     cves = (
         CVE.select()
@@ -432,10 +462,20 @@ def list_sbom_cves(sbom_id: int):
         .distinct()
     )
 
-    return {
-        **{"sbom": sbom.__data__},
-        **paginated_query(cves, CVE, "cves"),
-    }
+    if output_format == "csv":
+        return Response(
+            stream_csv(
+                cves,
+                CVE._meta.fields.keys(),
+            ),
+            content_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=sbom_cve.csv"},
+        )
+    else:
+        return {
+            **{"sbom": sbom.__data__},
+            **paginated_query(cves, CVE, "cves"),
+        }
 
 
 @app.cli.command("update-cves")
