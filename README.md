@@ -51,7 +51,11 @@ Returns list of CPEs for a specific SBOM.
 
 **GET** */sbom/<int:id>/cve*
 
-Returns a paginated list of CVEs for the SBOM.
+Optional Parameter: *output_format*, options: json or csv. Default is json
+
+If *output_format* is json, returns a paginated list of CVEs for the SBOM.
+
+If *output_format* is csv, streams a *sbom_cve.csv* file with all CVEs for this SBOM.
 
 ## Commands
 
@@ -61,7 +65,7 @@ Using the NIST CVE API, for each CPE, pull the CVEs. This can be a long process.
 
 ## TODO
 
-* CSV output
+* <del>CSV output</del>
 * Format checking for SPDX
 * Notes for SBOMs
 
