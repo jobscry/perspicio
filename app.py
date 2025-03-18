@@ -11,6 +11,8 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from flask_peewee.db import Database
+from spdx_tools.spdx.parser.json.json_parser import parse_from_file
+from spdx_tools.spdx.validation.document_validator import validate_full_spdx_document
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from werkzeug.utils import secure_filename
 
@@ -29,7 +31,7 @@ DEBUG = os.getenv("DEBUG", False)
 SECRET_KEY = os.getenv("SECRET_KEY")
 DEFAULT_ITEMS_PER_PAGE = int(os.getenv("DEFAULT_ITEMS_PER_PAGE", 50))
 
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp/spdx/uploads")
+UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp")
 ALLOWED_EXTENSIONS = {"json"}
 
 CPE_REFERENCES = "{http://cpe.mitre.org/dictionary/2.0}references"
@@ -114,17 +116,16 @@ class CVECPE(db.Model):
 class APIError(Exception):
     status_code = 400
 
-    def __init__(self, message: str, status_code: int, payload: dict = None):
+    def __init__(self, message: str, status_code: int = 400, payload: dict = None):
         super().__init__()
         self.message = message
-        if status_code is not None:
-            self.status_code = status_code
-        self.payload = payload
+        self.status_code = status_code
+        self.payload = payload or {}
 
     def to_dict(self) -> dict:
-        rv = dict(self.payload or ())
-        rv["message"] = self.message
-        return rv
+        response = dict(self.payload or ())
+        response["error"] = self.message
+        return response
 
 
 @app.errorhandler(APIError)
@@ -409,21 +410,51 @@ def upload_sbom():
     if "file" not in request.files:
         raise APIError("Missing SBOM File", 400)
 
+    validate = request.args.get("validate", "true").lower() == "true"
+    logger.info(f"Validation: {validate}")
+
     file = request.files["file"]
 
     if file.filename == "":
         raise APIError("No selected file", 400)
 
-    if file and is_allowed_file(file.filename):
-        if file.mimetype != "application/json":
-            raise APIError("Invalid file type", 400)
+    if not is_allowed_file(file.filename):
+        raise APIError("Invalid file type", 400)
 
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        file.save(file_path)
+    if file.mimetype != "application/json":
+        raise APIError("Invalid MIME type", 400)
+
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        logger.info(f"Saving SBOM file to {file_path}")
+        with open(file_path, "wb") as f:
+            for chunk in file:
+                f.write(chunk)
+
+        if validate:
+            logger.info(f"Validating SBOM file {file_path}")
+            spdx_document = parse_from_file(file_path)
+            validation_messages = validate_full_spdx_document(spdx_document)
+
+            if validation_messages:
+                raise APIError(f"Invalid SPDX document: {validation_messages}", 400)
 
         load_sbom_to_database(file_path)
-        return Response(status=201)
+        return (
+            jsonify(
+                {
+                    "message": "SBOM uploaded and processed successfully",
+                }
+            ),
+            201,
+        )
+
+    except APIError as e:
+        raise e
 
 
 @app.route("/sbom/<int:sbom_id>/cpe", methods=["GET"])

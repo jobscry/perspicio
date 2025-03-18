@@ -35,6 +35,8 @@ Why isn't this a thing already?
 
 **POST** */sbom*
 
+Optional query param: **validate** can be *True* or *False*. If true, will validate SPDX document.
+
 Expects an SPDX JSON file. Uploads the file to the the UPLOAD_FOLDER directory. Parses the JSON file looking for CPEs in *packages -> externalRefs -> referenceCategory["Security"]*. Might not be the best way do find them.
 
 For each CPE, using the NIST CPE API validate the CPE is real and load the information from NIST into the local database.
@@ -66,7 +68,7 @@ Using the NIST CVE API, for each CPE, pull the CVEs. This can be a long process.
 ## TODO
 
 * <del>CSV output</del>
-* Format checking for SPDX
+* <del>Format checking for SPDX</del>
 * Notes for SBOMs
 
 ## References
