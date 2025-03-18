@@ -152,6 +152,31 @@ def is_429_error(exception: Exception) -> bool:
     ),  # Exponential backoff: 5s, 10s, 20s, up to 30s
     stop=stop_after_attempt(5),  # Stop after 5 retries
 )
+def get_cpe_data_from_nvd(cpe_name: str) -> dict:
+    logger.info(f"Getting CPE data from NVD for {cpe_name}")
+
+    response = requests.get(
+        NVD_CPE_URL,
+        params={
+            "cpeMatchString": cpe_name,
+            "resultsPerPage": 1,
+        },
+        headers={
+            "Accept": "application/json",
+            "apiKey": NVD_API_KEY,
+        },
+    )
+    logger.info(f"NVD API Response: {response.status_code}, URL: {response.url}")
+    response.raise_for_status()  # Raise error for non-200 responses
+
+    data = response.json()
+    if data.get("totalResults", 0) == 0:
+        logger.info(f"No CPE data found for CPE {cpe_name}")
+        return None  # No matching CPE found
+
+    return data["products"][0]["cpe"]
+
+
 def load_sbom_to_database(sbom_file_path: str) -> None:
     logger.info("Loading SBOM to database")
 
@@ -160,7 +185,7 @@ def load_sbom_to_database(sbom_file_path: str) -> None:
         sbom_json = orjson.loads(f.read())
 
         logger.info("Creating SBOM in database")
-        sbom = SBOM.create(
+        SBOM.create(
             name=sbom_json["name"],
             created=sbom_json["creationInfo"]["created"],
             parsed=datetime.now(timezone.utc),
@@ -170,75 +195,49 @@ def load_sbom_to_database(sbom_file_path: str) -> None:
         logger.info("SBOM created in database")
         logger.info("Creating SBOM CPEs in database")
         for package in sbom_json["packages"]:
-            for external_ref in package["externalRefs"]:
-                if external_ref["referenceCategory"] == "SECURITY":
+            for external_ref in package.get("packageExternalReferences", []):
+                if external_ref.get("referenceType") in ["cpe22Type", "cpe23Type"]:
+                    cpe_name = external_ref.get("referenceLocator")
+                    if not cpe_name:
+                        logger.info("No CPE name found in external reference")
+                        continue
+
                     logger.info(
-                        f"Creating SBOM CPE for package {package['name']} with CPE {external_ref['referenceLocator']}"
+                        f"Processing CPE {cpe_name} for package {package['name']}"
                     )
-                    if (
-                        cpe := CPE.get_or_none(
-                            cpe=external_ref["referenceLocator"],
-                        )
-                    ) is None:
+                    cpe = CPE.get_or_none(cpe=cpe_name)
+                    if cpe is None:
                         logger.info(
-                            f"CPE {external_ref['referenceLocator']} does not exist in database"
+                            f"CPE {cpe_name} does not exist in database, fetching from NVD"
                         )
-
-                        response = requests.get(
-                            NVD_CPE_URL,
-                            params={
-                                "cpeMatchString": external_ref["referenceLocator"],
-                                "resultsPerPage": 1,
-                            },
-                            headers={
-                                "Accept": "application/json",
-                                "apiKey": NVD_API_KEY,
-                            },
-                        )
-                        logger.info(f"Response status code: {response.status_code}")
-                        logger.info(f"URL: {response.url}")
-
-                        if response.status_code == 429:  # Rate limit hit
-                            raise Exception("Rate limit exceeded")
 
                         try:
-                            response.raise_for_status()
-
-                            data = response.json()
-
-                            if data["totalResults"] == 0:
+                            cpe_data = get_cpe_data_from_nvd(cpe_name)
+                            if cpe_data is None:
                                 logger.info(
-                                    f"No CPE data found for CPE {external_ref['referenceLocator']}"
+                                    f"No CPE data found for {cpe_name}, skipping package {package['name']}"
                                 )
                                 continue
 
-                            cpe = CPE()
-                            cpe.cpe = data["products"][0]["cpe"]["cpeName"]
-                            cpe.cpe_id = data["products"][0]["cpe"]["cpeNameId"]
-                            cpe.modified = data["products"][0]["cpe"]["lastModified"]
-                            cpe.created = data["products"][0]["cpe"]["created"]
-                            cpe.name = data["products"][0]["cpe"]["titles"][0]["title"]
-                            cpe.depcreated = data["products"][0]["cpe"]["deprecated"]
-
-                            references = []
-                            for reference in data["products"][0]["cpe"].get("refs", []):
-                                references.append(reference["ref"])
-                            cpe.references = ",".join(references)
-
-                            cpe.save()
-                            logger.info(
-                                f"Updated CPE {cpe.cpe} with CPE ID {cpe.cpe_id}"
+                            cpe = CPE.create(
+                                cpe=cpe_data["cpeName"],
+                                cpe_id=cpe_data["cpeNameId"],
+                                modified=cpe_data["lastModified"],
+                                created=cpe_data["created"],
+                                name=cpe_data["titles"][0]["title"],
+                                depcreated=cpe_data.get("deprecated", False),
+                                references=",".join(
+                                    ref["ref"] for ref in cpe_data.get("refs", [])
+                                ),
                             )
+
                         except requests.exceptions.HTTPError as e:
                             logger.error(f"Error: {e}")
                     else:
                         logger.info(
                             f"CPE {cpe.cpe} already exists for package {package['name']}"
                         )
-                    SBOMCPE.create(sbom=sbom, cpe=cpe)
-                    logger.info(
-                        f"SBOM CPE created for package {package['name']} with CPE {cpe.cpe}"
-                    )
+
         logger.info("SBOM CPEs created in database")
 
 
